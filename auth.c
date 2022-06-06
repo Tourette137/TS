@@ -34,28 +34,19 @@
 
 #include "passthrough_helpers.h"
 
-typedef struct user {
-	char* username;
-	char* password;
-	char cellphone[14];
-} *USER;
-
-typedef struct users {
-	USER* users;
-	int size;
-} *USERS;
-
-USERS users_list = NULL;
-
 int* authored = NULL;
 
 char* cwd_path = NULL;
 int cwd_path_size;
+
 char* pin_pipe_path = NULL;
 char* passwd_path = NULL;
 
+
 const char* PIN_PIPE    = "/utils/pipe_for_pins";
 const char* PASSWD_FILE = "/utils/passwd";
+
+
 
 int auth_register() {
 
@@ -94,11 +85,19 @@ int auth_register() {
 int auth() {
 
 	pid_t pid;			// Process ID 
-	int channel[2];		// Pipe to grab the output
-	char buffer[1024];	// Buffer
+	int channelPass[2];		// Pipe to grab the output
+	int channelPin[2];		// Pipe to grab the output
 
 	// Creating a pipe
-	if (pipe(channel) == -1) { 
+	if (pipe(channelPass) == -1) { 
+		
+		//puts("Couldn't create pipe."); 
+		return 1; 
+
+	}
+
+	// Creating a pipe
+	if (pipe(channelPin) == -1) { 
 		
 		//puts("Couldn't create pipe."); 
 		return 1; 
@@ -116,46 +115,92 @@ int auth() {
 	// Child process that will execute the python program
 	if (pid == 0) {
 
-		dup2(channel[1], 1);
-		close(channel[0]);
-		close(channel[1]);
+		close(channelPass[0]);
+		close(channelPin[0]);
+
+		dup2(channelPin[1], 1);
 
 		setuid(0);
+		FILE* passwdFile = fopen(passwd_path, "r");
 
-		char username[100];
-		getlogin_r(username, sizeof(username));
+		if (passwdFile != NULL) {
 
-		int i;
-		for (i = 0; i < users_list->size; i++) {
-			USER user = users_list->users[i];
-			if (strcmp(user->username, username) == 0) {
-				// Executing program to pip
-				char pythonFile[cwd_path_size + 9];
-				sprintf(pythonFile, "%s/auth.py", cwd_path);
+			char username[100];
+			getlogin_r(username, sizeof(username));
 
-				execl("/usr/bin/python3", "python3", pythonFile, user->cellphone, (char *) NULL);
+			char line[100];
+			while( fgets(line, 100, passwdFile) != NULL) {
+		
+				char* token;
+				token = strtok(line," ");
+		
+				if (strcmp(token, username) == 0) {
+				
+					token = strtok(NULL," ");
+					char* cellphone = token;
 
-				break;
+					token = strtok(NULL," ");
+					char* password = token;
+					write(channelPass[1], password, sizeof(password));
+
+					// Executing program to pip
+					char pythonFile[cwd_path_size + 9];
+					sprintf(pythonFile, "%s/auth.py", cwd_path);
+
+					execl("/usr/bin/python3", "python3", pythonFile, cellphone, (char *) NULL);
+
+					break;
+
+				}
 			}
-		}
 
-		if (i >= users_list->size)
+			close(channelPass[1]);
+			close(channelPin[1]);
+
 			//puts("User not in the user map.");
 			return 7;
+
+		} else {
+		
+			//puts("Couldn't open user map");
+			return 8;
+		
+		}
 
 		//puts("10001");
 
 	// Parent process that will grab the output from the child
 	} else {
 
-		close(channel[1]);
-		// Reading from pipe
-		read(channel[0], buffer, sizeof(buffer));
-		close(channel[0]);
+		close(channelPass[1]);
+		close(channelPin[1]);
 
-		int pin;
+		// Buffer Password
+		char buffer_pass[1024];	
+		// Reading pass from pipe
+		read(channelPass[0], buffer_pass, sizeof(buffer_pass));
+		puts(buffer_pass);
+
+		// Buffer Password
+		char buffer_pin[1024];	
+		// Reading pin from pipe
+		read(channelPin[0], buffer_pin, sizeof(buffer_pin));
+		puts(buffer_pin);
+
+		close(channelPass[0]);
+		close(channelPin[0]);
+
+		int   pin;
+		char* password = (char*) malloc(sizeof(char) * sizeof(buffer_pass));;
+
 		// Couldn't get pin
-		if( sscanf(buffer, "%d", &pin) != 1) { 
+		if(sscanf(buffer_pin, "%d", &pin) != 1) { 
+
+			//puts("Couldn't execute program."); 
+			return 3; 
+
+		// Couldn't get pass
+		} else if (sscanf(buffer_pass, "%s", password) != 1) {
 
 			//puts("Couldn't execute program."); 
 			return 3; 
@@ -166,7 +211,9 @@ int auth() {
 			printf("PIN received from python pipe: %05d\n", pin);
 	
 			pid_t pid_terminal;		// Process ID 
-			char buffer_terminal[1024];	// Buffer
+
+			char buffer_pin_terminal[1024];  //Buffer do Fifo
+			char buffer_pass_terminal[1024]; //Buffer do Fifo
 
 			// Creating a child process
 			if ((pid_terminal = fork()) == -1) { 
@@ -186,38 +233,47 @@ int auth() {
 			// Parent process that will grab the output from the child
 			} else {
 
-				// Reading from pipe
-				int read_fd = open(pin_pipe_path, O_RDONLY);
+				// Reading password from pipe
+				int read_fd_pass = open(pin_pipe_path, O_RDONLY);
 
-				read(read_fd, buffer_terminal, sizeof(buffer_terminal));
-				close(read_fd);
+				read (read_fd_pass, buffer_pass_terminal, sizeof(buffer_pass_terminal));
+
+				close(read_fd_pass);
+
+				// Reading pin from pipe
+				int read_fd_pin = open(pin_pipe_path, O_RDONLY);
+
+				read(read_fd_pin, buffer_pin_terminal, sizeof(buffer_pin_terminal));
+
+				close(read_fd_pin);
+
 				
-				int pin_terminal;
+				int   pin_terminal;
+				char* pass_terminal = (char*) malloc(sizeof(char) * sizeof(buffer_pass_terminal));
 
+				// Couldn't get password
+				if(sscanf(buffer_pass_terminal, "%s", pass_terminal) != 1) 
+					return 5;
+				
 				// Couldn't get pin
-				if( sscanf(buffer_terminal, "%d", &pin_terminal) != 1) { 
+				if(sscanf(buffer_pin_terminal, "%d", &pin_terminal) != 1) 
+					return 5;
 
-					//puts("Invalid format."); 
-					return 5; 
-
-				// Could get pin
-				} else { 
+				// PIN from user and auth match
+				if (pin_terminal == pin && strcmp(pass_terminal, password) == 0) {
 			
-					// PIN from user and auth match
-					if (pin_terminal == pin) {
-				
-						//puts("Access granted");
-						return 0;
-				
-					// PINs don't match
-					} else {
-				
-						//puts("Access denied.");
-						return 6;
-				
-					}
-
+					//puts("Access granted");
+					return 0;
+			
+				// PINs don't match
+				} else {
+			
+					//puts("Access denied.");
+					return 6;
+			
 				}
+
+				
 			}
 			
 
@@ -772,7 +828,7 @@ static struct fuse_operations auth_oper = {
 #ifdef HAVE_COPY_FILE_RANGE
 	.copy_file_range = auth_copy_file_range,
 #endif
-	.lseek      = auth_lseek,
+	.lseek = auth_lseek,
 };
 
 
@@ -795,59 +851,10 @@ void initializePaths() {
 
 }
 
-void load_users()
-{
-	char line[100];
-	int size_aux;
-
-	users_list = (USERS) malloc(sizeof(struct users));
-	users_list->users = NULL;
-	users_list->size = 0;
-
-	FILE* passwd_file = fopen(passwd_path, "r");
-
-	while( fgets(line, 100, passwd_file) != NULL ) {
-
-		// Reallocate space for one more user
-		users_list->users = realloc(users_list->users, (users_list->size + 1) * sizeof(USER));
-		users_list->size++;
-
-		USER new_user = (USER) malloc(sizeof(struct user));
-				
-		// Parsing username
-		char* token = strtok(line, " ");
-		size_aux = strlen(token);
-		new_user->username = (char*) malloc(size_aux * sizeof(char));
-		strcpy(new_user->username, token);
-
-		// Parsing password
-		token = strtok(NULL, " ");
-		size_aux = strlen(token);
-		new_user->password = (char*) malloc(size_aux * sizeof(char));
-		strcpy(new_user->password, token);
-
-		// Parsing cellphone
-		token = strtok(NULL, " ");
-		strcpy(new_user->cellphone, token);
-
-		users_list->users[users_list->size-1] = new_user;
-	}
-
-	fclose(passwd_file);
-}
 
 int main(int argc, char *argv[])
 {
 	initializePaths();
-	load_users();
-
-	for (int i = 0; i < users_list->size; i++) {
-		USER user = users_list->users[i];
-		printf("username: %s\n", user->username);
-		printf("password: %s\n", user->password);
-		printf("cellphone: %s\n", user->cellphone);
-		printf("--------------------\n");
-	}
 
 	if (argc > 1 && strcmp(argv[1],"register") == 0 ) {
 		
@@ -879,7 +886,7 @@ usermap:
 criar user (tourette, pass, nrTelemovel)
 1 - load para a estrutura
 
-
 Descobrir como mudar pin para ser sempre o mesmo
+
 Descobrir o que é mmap
 */		
