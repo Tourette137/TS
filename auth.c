@@ -34,19 +34,28 @@
 
 #include "passthrough_helpers.h"
 
+typedef struct user {
+	char* username;
+	char* password;
+	char cellphone[14];
+} *USER;
+
+typedef struct users {
+	USER* users;
+	int size;
+} *USERS;
+
+USERS users_list = NULL;
+
 int* authored = NULL;
 
+char* cwd_path = NULL;
 int cwd_path_size;
-
-char* cwd = NULL;
 char* pin_pipe_path = NULL;
 char* passwd_path = NULL;
 
-
-const char* pin_pipe    = "/utils/pipe_for_pins";
-const char* passwd_file = "/utils/passwd";
-
-
+const char* PIN_PIPE    = "/utils/pipe_for_pins";
+const char* PASSWD_FILE = "/utils/passwd";
 
 int auth_register() {
 
@@ -112,44 +121,27 @@ int auth() {
 		close(channel[1]);
 
 		setuid(0);
-		FILE* passwdFile = fopen(passwd_path, "r");
 
-		if (passwdFile != NULL) {
+		char username[100];
+		getlogin_r(username, sizeof(username));
 
-			char username[100];
-			getlogin_r(username, sizeof(username));
+		int i;
+		for (i = 0; i < users_list->size; i++) {
+			USER user = users_list->users[i];
+			if (strcmp(user->username, username) == 0) {
+				// Executing program to pip
+				char pythonFile[cwd_path_size + 9];
+				sprintf(pythonFile, "%s/auth.py", cwd_path);
 
-			char line[100];
-			while( fgets(line, 100, passwdFile) != NULL) {
-		
-				char* token;
-				token = strtok(line," ");
-		
-				if (strcmp(token, username) == 0) {
-				
-					token = strtok(NULL," ");
-					//token = strtok(NULL,"\n");
+				execl("/usr/bin/python3", "python3", pythonFile, user->cellphone, (char *) NULL);
 
-					// Executing program to pip
-					char pythonFile[cwd_path_size + 9];
-					sprintf(pythonFile, "%s/auth.py", cwd);
-
-					execl("/usr/bin/python3", "python3", pythonFile, token, (char *) NULL);
-
-					break;
-
-				}
+				break;
 			}
+		}
 
+		if (i >= users_list->size)
 			//puts("User not in the user map.");
 			return 7;
-
-		} else {
-		
-			//puts("Couldn't open user map");
-			return 8;
-		
-		}
 
 		//puts("10001");
 
@@ -187,7 +179,7 @@ int auth() {
 			// Child process that will execute the python program
 			if (pid_terminal == 0) {
 				char promptFile[cwd_path_size + 11];
-				sprintf(promptFile, "%s/prompt.sh", cwd);
+				sprintf(promptFile, "%s/prompt.sh", cwd_path);
 
 				execl("/usr/bin/xterm", "xterm", "-e", "bash", promptFile, pin_pipe_path, (char *) NULL);
 
@@ -780,7 +772,7 @@ static struct fuse_operations auth_oper = {
 #ifdef HAVE_COPY_FILE_RANGE
 	.copy_file_range = auth_copy_file_range,
 #endif
-	.lseek = auth_lseek,
+	.lseek      = auth_lseek,
 };
 
 
@@ -791,22 +783,71 @@ void initializePaths() {
 
 	cwd_path_size = strlen(buff);
 
-	cwd = (char*) malloc(cwd_path_size * sizeof(char));
-	strcpy(cwd, buff);
+	cwd_path = (char*) malloc(cwd_path_size * sizeof(char));
+	strcpy(cwd_path, buff);
 
 
-	pin_pipe_path = (char*) malloc((cwd_path_size + strlen(pin_pipe)) * sizeof(char));
-	sprintf(pin_pipe_path, "%s%s", buff, pin_pipe);
+	pin_pipe_path = (char*) malloc((cwd_path_size + strlen(PIN_PIPE)) * sizeof(char));
+	sprintf(pin_pipe_path, "%s%s", buff, PIN_PIPE);
 
-	passwd_path = (char*) malloc((cwd_path_size + strlen(passwd_file)) * sizeof(char));
-	sprintf(passwd_path, "%s%s", buff, passwd_file);
+	passwd_path = (char*) malloc((cwd_path_size + strlen(PASSWD_FILE)) * sizeof(char));
+	sprintf(passwd_path, "%s%s", buff, PASSWD_FILE);
 
 }
 
+void load_users()
+{
+	char line[100];
+	int size_aux;
+
+	users_list = (USERS) malloc(sizeof(struct users));
+	users_list->users = NULL;
+	users_list->size = 0;
+
+	FILE* passwd_file = fopen(passwd_path, "r");
+
+	while( fgets(line, 100, passwd_file) != NULL ) {
+
+		// Reallocate space for one more user
+		users_list->users = realloc(users_list->users, (users_list->size + 1) * sizeof(USER));
+		users_list->size++;
+
+		USER new_user = (USER) malloc(sizeof(struct user));
+				
+		// Parsing username
+		char* token = strtok(line, " ");
+		size_aux = strlen(token);
+		new_user->username = (char*) malloc(size_aux * sizeof(char));
+		strcpy(new_user->username, token);
+
+		// Parsing password
+		token = strtok(NULL, " ");
+		size_aux = strlen(token);
+		new_user->password = (char*) malloc(size_aux * sizeof(char));
+		strcpy(new_user->password, token);
+
+		// Parsing cellphone
+		token = strtok(NULL, " ");
+		strcpy(new_user->cellphone, token);
+
+		users_list->users[users_list->size-1] = new_user;
+	}
+
+	fclose(passwd_file);
+}
 
 int main(int argc, char *argv[])
 {
 	initializePaths();
+	load_users();
+
+	for (int i = 0; i < users_list->size; i++) {
+		USER user = users_list->users[i];
+		printf("username: %s\n", user->username);
+		printf("password: %s\n", user->password);
+		printf("cellphone: %s\n", user->cellphone);
+		printf("--------------------\n");
+	}
 
 	if (argc > 1 && strcmp(argv[1],"register") == 0 ) {
 		
@@ -832,7 +873,7 @@ Ideias para implementar:
 - Mudar o nome das funções auth para outro e comnetários
 - Acrescentar por exemplo "./auth registar" para registar novos Users e acrescentar ao usermap
 - Possuir uma estrutura de dados que sempre que um Utilizador se regista dá update nela mesma com um SIGALARM por exemplo;
-
+- guardar hash da password
 
 usermap:
 criar user (tourette, pass, nrTelemovel)
@@ -840,6 +881,5 @@ criar user (tourette, pass, nrTelemovel)
 
 
 Descobrir como mudar pin para ser sempre o mesmo
-
 Descobrir o que é mmap
 */		
