@@ -361,7 +361,7 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 	// Verify if inputted password hash matches with the real one
 	if (strcmp(inputted_password_hash, password_hash) != 0){
 		fprintf(stderr, "Error: Invalid password.\n");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 
 
@@ -423,7 +423,7 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 	// Verify if inputted pin matches with the real one
 	if (inputted_pin != real_pin) {
 		fprintf(stderr, "Error: Invalid PIN.\n");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 
 	return 0;
@@ -727,7 +727,7 @@ static int auth_open(const char *path, struct fuse_file_info *fi)
 
 	if (*authored != 1) {
 		*authored = -1;
-		return -errno;
+		return -EACCES;
 	}
 
 	*authored = -1;
