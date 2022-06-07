@@ -20,6 +20,7 @@
 #include <sys/mman.h>
 #include <errno.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <errno.h>
@@ -43,14 +44,54 @@ char* pin_pipe_path = NULL;
 char* passwd_path = NULL;
 
 
-const char* PIN_PIPE    = "/utils/pipe_for_pins";
+const char* PIN_PIPE    = "/utils/pipe_for_pin";
 const char* PASSWD_FILE = "/utils/passwd";
 
+void hash_password(char* buffer, char* password, char* salt)
+{
+    pid_t pid;
+    int pipe_fd[2];
 
+	// Creating pipe to send hashed password
+	if (pipe(pipe_fd) == -1) { 
+		
+		//puts("Couldn't create pipe."); 
+		return;
+	}
+
+	// Creating a child process
+    if ((pid = fork()) == -1) {
+        return;
+    }
+
+    // Child process that will run openssl
+    if (pid == 0) {
+        close(pipe_fd[0]);
+        dup2(pipe_fd[1], 1);
+
+        setuid(0);
+
+		if (salt == NULL)
+        	execl("/usr/bin/openssl", "openssl", "passwd", "-5", password, NULL);
+		else
+			execl("/usr/bin/openssl", "openssl", "passwd", "-5", "-salt", salt, password, NULL);
+
+		exit(0);
+    }
+    else {
+        close(pipe_fd[1]);
+        read(pipe_fd[0], buffer, 1024); //TODO: ESTE VALOR!!!
+        close(pipe_fd[0]);
+
+        buffer[strcspn ( buffer, "\n" )] = '\0';
+		//printf("[DEBUG] buffer: %s\n", buffer);
+		//printf("[DEBUG] password: |%s|\n", password);
+        //printf("[DEBUG] password_size: %ld\n", strlen(password));
+		//printf("[DEBUG] salt: %s\n", salt);			
+    }
+}
 
 int auth_register() {
-
-	//TODO: criar estrutura (se tiver não acrescentar) 
 
 	setuid(0);
 	FILE* passwdFile = fopen(passwd_path, "a");
@@ -58,13 +99,19 @@ int auth_register() {
 	char username[100];
 	getlogin_r(username, sizeof(username));
 
-	printf("\nUsername: %s\n\n", username);
+	printf("\nUsername: |%s|\n\n", username);
 
 	char password[100];
 	printf("Enter password: ");
 	fgets(password, 100, stdin);
+    password[strcspn ( password, "\n" )] = '\0';
 
-	printf("Entered password: %s\n", password);
+	printf("Entered password: |%s|\n", password);
+
+    char *hashed_pass = (char*) calloc(1024, sizeof(char)); //TODO: calcular tamanho necessário
+    hash_password(hashed_pass, password, NULL);
+
+    printf("Hashed password: |%s|\n", hashed_pass);
 
 	char telemovelFinal[14];
 	char telemovel[10];
@@ -72,9 +119,9 @@ int auth_register() {
 	fgets(telemovel, 10, stdin);
 
 	sprintf(telemovelFinal,"+351%s", telemovel);
-	printf("Entered telemovel: %s\n", telemovelFinal);
+	printf("Entered telemovel: |%s|\n", telemovelFinal);
 
-	fprintf(passwdFile, "%s %s %s", username, telemovelFinal, password);
+	fprintf(passwdFile, "%s %s %s", username, telemovelFinal, hashed_pass);
 
 	fclose(passwdFile);
 
@@ -84,11 +131,11 @@ int auth_register() {
 
 int auth() {
 
-	pid_t pid;			// Process ID 
+	pid_t pid;			    // Process ID 
 	int channelPass[2];		// Pipe to grab the output
 	int channelPin[2];		// Pipe to grab the output
 
-	// Creating a pipe
+	// Creating pipe to send hashed password
 	if (pipe(channelPass) == -1) { 
 		
 		//puts("Couldn't create pipe."); 
@@ -96,7 +143,7 @@ int auth() {
 
 	}
 
-	// Creating a pipe
+	// Creating pipe to send pin
 	if (pipe(channelPin) == -1) { 
 		
 		//puts("Couldn't create pipe."); 
@@ -140,12 +187,14 @@ int auth() {
 					char* cellphone = token;
 
 					token = strtok(NULL," ");
-					char* password = token;
-					write(channelPass[1], password, sizeof(password));
+					char* id_salt_hash = token;
+					write(channelPass[1], id_salt_hash, strlen(id_salt_hash));
 
-					// Executing program to pip
+					// Executing program to pipe
 					char pythonFile[cwd_path_size + 9];
 					sprintf(pythonFile, "%s/auth.py", cwd_path);
+
+					fclose(passwdFile);
 
 					execl("/usr/bin/python3", "python3", pythonFile, cellphone, (char *) NULL);
 
@@ -156,6 +205,8 @@ int auth() {
 
 			close(channelPass[1]);
 			close(channelPin[1]);
+
+			exit(0); // PIN_DEBUG
 
 			//puts("User not in the user map.");
 			return 7;
@@ -171,27 +222,26 @@ int auth() {
 
 	// Parent process that will grab the output from the child
 	} else {
-
 		close(channelPass[1]);
 		close(channelPin[1]);
 
-		// Buffer Password
+		// Buffer for the id + salt + hash
 		char buffer_pass[1024];	
-		// Reading pass from pipe
+		// Reading id + salt + hash from pipe
 		read(channelPass[0], buffer_pass, sizeof(buffer_pass));
-		puts(buffer_pass);
+		//puts(buffer_pass);
 
-		// Buffer Password
+		// Buffer for the pin
 		char buffer_pin[1024];	
 		// Reading pin from pipe
 		read(channelPin[0], buffer_pin, sizeof(buffer_pin));
-		puts(buffer_pin);
+		//puts(buffer_pin);
 
 		close(channelPass[0]);
 		close(channelPin[0]);
 
 		int   pin;
-		char* password = (char*) malloc(sizeof(char) * sizeof(buffer_pass));;
+		char* id_salt_hash = (char*) malloc(sizeof(char) * sizeof(buffer_pass));
 
 		// Couldn't get pin
 		if(sscanf(buffer_pin, "%d", &pin) != 1) { 
@@ -199,18 +249,19 @@ int auth() {
 			//puts("Couldn't execute program."); 
 			return 3; 
 
-		// Couldn't get pass
-		} else if (sscanf(buffer_pass, "%s", password) != 1) {
+		// Couldn't get id + salt + hash
+		} else if (sscanf(buffer_pass, "%s", id_salt_hash) != 1) {
 
 			//puts("Couldn't execute program."); 
 			return 3; 
 
-		// Could get pin
+		// Could get pin and id + salt + hash
 		} else { 
 			
-			printf("PIN received from python pipe: %05d\n", pin);
+			//printf("[DEBUG] PIN received from python pipe: %05d\n", pin);
 	
-			pid_t pid_terminal;		// Process ID 
+			pid_t pid_terminal;		// Process ID
+            int status;
 
 			char buffer_pin_terminal[1024];  //Buffer do Fifo
 			char buffer_pass_terminal[1024]; //Buffer do Fifo
@@ -229,27 +280,28 @@ int auth() {
 				sprintf(promptFile, "%s/prompt.sh", cwd_path);
 
 				execl("/usr/bin/xterm", "xterm", "-e", "bash", promptFile, pin_pipe_path, (char *) NULL);
+                _exit(0);
 
 			// Parent process that will grab the output from the child
 			} else {
 
+                // Wait for child to terminate execution
+                waitpid(pid_terminal, &status, 0);
+
+				FILE* read_pipe = fopen(pin_pipe_path, "r");
+
 				// Reading password from pipe
-				int read_fd_pass = open(pin_pipe_path, O_RDONLY);
-
-				read (read_fd_pass, buffer_pass_terminal, sizeof(buffer_pass_terminal));
-
-				close(read_fd_pass);
+				while(fgets(buffer_pass_terminal, sizeof(buffer_pass_terminal), read_pipe) == NULL);
+                //printf("[DEBUG] buffer pass terminal: %s\n", buffer_pass_terminal);
 
 				// Reading pin from pipe
-				int read_fd_pin = open(pin_pipe_path, O_RDONLY);
+				while(fgets(buffer_pin_terminal, sizeof(buffer_pin_terminal), read_pipe) == NULL);
+                //printf("[DEBUG] buffer pin terminal: %s\n", buffer_pin_terminal);
 
-				read(read_fd_pin, buffer_pin_terminal, sizeof(buffer_pin_terminal));
+				fclose(read_pipe);
 
-				close(read_fd_pin);
-
-				
 				int   pin_terminal;
-				char* pass_terminal = (char*) malloc(sizeof(char) * sizeof(buffer_pass_terminal));
+				char* pass_terminal = (char*) malloc(sizeof(char) * (strlen(buffer_pass_terminal)+1));
 
 				// Couldn't get password
 				if(sscanf(buffer_pass_terminal, "%s", pass_terminal) != 1) 
@@ -260,10 +312,41 @@ int auth() {
 					return 5;
 
 				// PIN from user and auth match
-				if (pin_terminal == pin && strcmp(pass_terminal, password) == 0) {
+				if (pin_terminal == pin){
+					
+					// Parse salt and password hash that we got from the passwd file
+					char *salt, *password_hash;
+					char* token = strtok(id_salt_hash, "$");    // token = "5"
+					token = strtok(NULL, "$");                  // token = <salt>
+					salt = token;
+					token = strtok(NULL, "$");                  // token = <password hash>
+					password_hash = token;
+
+					// Calculate hash of password given from the terminal
+					char* terminal_password_hash = (char*) calloc(1024, sizeof(char));
+					hash_password(terminal_password_hash, pass_terminal, salt);
+
+                    // Parse password hash that we got from the terminal
+                    strtok(terminal_password_hash, "$");
+                    strtok(NULL, "$");
+                    terminal_password_hash = strtok(NULL, "$");
+
+					//printf("[DEBUG] salt: |%s|\n", salt);
+					//printf("[DEBUG] password hash: |%s|\n", password_hash);
+					//printf("[DEBUG] terminal password hash: |%s|\n", terminal_password_hash);
+					
+					if (strcmp(terminal_password_hash, password_hash) == 0){
+
+						//puts("Access granted");
+						return 0;
+
+					}
+					// Passwords don't match
+					else {
+
+						return 7;
+					}
 			
-					//puts("Access granted");
-					return 0;
 			
 				// PINs don't match
 				} else {
@@ -851,7 +934,6 @@ void initializePaths() {
 
 }
 
-
 int main(int argc, char *argv[])
 {
 	initializePaths();
@@ -873,7 +955,7 @@ int main(int argc, char *argv[])
 		return fuse_main(argc, argv, &auth_oper, NULL);
 	}
 
-}	
+}
 
 /* TODO:
 Ideias para implementar:
@@ -881,6 +963,8 @@ Ideias para implementar:
 - Acrescentar por exemplo "./auth registar" para registar novos Users e acrescentar ao usermap
 - Possuir uma estrutura de dados que sempre que um Utilizador se regista dá update nela mesma com um SIGALARM por exemplo;
 - guardar hash da password
+- verificar tamanho do número de telemóvel inserido
+- asteriscos quando se escreve password
 
 usermap:
 criar user (tourette, pass, nrTelemovel)

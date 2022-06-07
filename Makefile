@@ -5,8 +5,10 @@ compile:
 	touch utils/passwd
 	chmod 0600 utils/passwd
 
+	touch utils/pipe_for_pin
+	chmod 0600 utils/pipe_for_pin
 clean:
 	rm -f auth
-	rm -f utils/pipe_for_pins
+	rm -f utils/pipe_for_pin
 	rm -f utils/passwd
 	fusermount -u pastaTestes
