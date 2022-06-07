@@ -98,7 +98,8 @@ void hash_password(char* buffer, char* password, char* salt)
 
 		// Procedure to end child proccess
 		int status;
-		pid_t child_pid = wait(&status);
+		//pid_t child_pid = wait(&status);
+		wait(&status);
 
 		if (WIFEXITED(status)) {
 			if (WEXITSTATUS(status) != EXIT_SUCCESS) {
@@ -141,9 +142,13 @@ int auth_register()
     hash_password(hashed_pass, password, NULL);
 
 	// Get cellphone from stdin and append '+351' prefix
-	char cellphone[11], cellphone_final[14];
+	char cellphone[10], cellphone_final[14];
 	printf("\nEnter cellphone: (+351) ");
-	fgets(cellphone, 11, stdin);
+	fgets(cellphone, 10, stdin);
+	if (strlen(cellphone) > 9) {
+		fprintf(stderr, "Cellphone number too big.\n");
+		_exit(EXIT_FAILURE);
+	}
 	cellphone[strcspn(cellphone, "\r\n" )] = '\0';
 
 	sprintf(cellphone_final,"+351%s", cellphone);
@@ -249,7 +254,8 @@ void get_credentials(char* buffer_full_hashed_pass, char* buffer_pin)
 	else {
 		// Procedure to end child proccess
 		int status;
-		pid_t child_pid = wait(&status);
+		//pid_t child_pid = wait(&status);
+		wait(&status);
 
 		if (WIFEXITED(status)) {
 			if (WEXITSTATUS(status) != EXIT_SUCCESS) {
@@ -280,7 +286,7 @@ void get_credentials(char* buffer_full_hashed_pass, char* buffer_pin)
 
 int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 {
-	pid_t pid, child_pid;
+	pid_t pid;
 	int fd_fifo, status;
 
 	// ---------------- PASSWORD VALIDATION ----------------
@@ -311,7 +317,8 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 	}
 
 	// Procedure to end child proccess
-	child_pid = wait(&status);
+	//child_pid = wait(&status);
+	wait(&status);
 
 	if (WIFEXITED(status)) {
 		if (WEXITSTATUS(status) != EXIT_SUCCESS) {
@@ -386,7 +393,8 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 	}
 
 	// Procedure to end child proccess
-	child_pid = wait(&status);
+	//child_pid = wait(&status);
+	wait(&status);
 
 	if (WIFEXITED(status)) {
 		if (WEXITSTATUS(status) != EXIT_SUCCESS) {
@@ -457,32 +465,6 @@ int auth() {
 	return authorized;
 }
 
-int auth_timeout (int seconds) {
-
-	pid_t pid;	// Process ID 
-
-	// Creating a child process 
-	if ((pid = fork()) == -1) { 
-
-		//puts("Couldn't create child process to track the time."); 
-		return 1; 
-
-	}
-
-	// Child process that will in 30 seconds update the authored flag
-	if (pid == 0) {
-		
-		// Timeout
-		sleep(seconds);
-		
-		*authored = -1;
-
-		exit(0);	
-	}
-	
-	return 0;
-}
-
 int auth_caller () {
 
 	while (*authored  == 0); // Add sleep() for non active waiting
@@ -490,9 +472,6 @@ int auth_caller () {
 	if (*authored == -1) {
 
 		*authored = 0;
-		
-		auth_timeout(30);  // TODO retirar isto
-		// TODO muda prefixo das funcoes para nao ser igual ao eddy
 
 		int access = auth();
 
@@ -744,20 +723,22 @@ static int auth_create(const char *path, mode_t mode,
 
 static int auth_open(const char *path, struct fuse_file_info *fi)
 {
+	auth_caller();
 
-	int ret = auth_caller();
+	if (*authored != 1) {
+		*authored = -1;
+		return -errno;
+	}
 
-	if (*authored != 1)
-		return ret;
-
+	*authored = -1;
+	
 	int res;
 
 	res = open(path, fi->flags);
 	if (res == -1) return -errno;
 
 	fi->fh = res;
-	return 0;
-	
+	return 0;	
 }
 
 static int auth_read(const char *path, char *buf, size_t size, off_t offset,

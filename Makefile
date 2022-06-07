@@ -4,8 +4,11 @@ compile:
 
 	touch utils/passwd
 	chmod 0600 utils/passwd
+	chmod +t utils/passwd
 
 	mkfifo utils/creds_fifo -m 0600 
+	chmod +t utils/creds_fifo
+
 clean:
 	rm -f auth
 	rm -f utils/creds_fifo
