@@ -2,4 +2,4 @@
 
 echo "PIN: "
 read pin
-echo $pin >> $1
+echo $pin > $1

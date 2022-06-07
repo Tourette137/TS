@@ -231,13 +231,13 @@ void get_credentials(char* buffer_full_hashed_pass, char* buffer_pin)
 				char* full_hashed_pass = token;
 				write(pass_pipe_fd[1], full_hashed_pass, strlen(full_hashed_pass));
 				close(pass_pipe_fd[1]);
-/* PIN_DEBUG*/
+
 				// Execute python script
 				execl("/usr/bin/python3", "python3", python_script_path, cellphone, (char *) NULL);
 
 				perror("Error executing python script");
 				_exit(EXIT_FAILURE);
-/**/
+
 			}
 		}
 	
@@ -247,20 +247,6 @@ void get_credentials(char* buffer_full_hashed_pass, char* buffer_pin)
 	}
 	// Parent process that will get the pin and full hashed password from is child, through the pipes
 	else {
-		// Close pipes outputs
-		close(pass_pipe_fd[1]);
-		close(pin_pipe_fd[1]);
-
-		// Reading full hashed pass from pipe
-		read(pass_pipe_fd[0], buffer_full_hashed_pass, HASHED_PASSWORD_BUFFER_SIZE);
-/* PIN_DEBUG*/
-		// Reading pin from pipe
-		read(pin_pipe_fd[0], buffer_pin, PIN_BUFFER_SIZE);
-/**/
-		// Close pipes inputs as they're no longer needed
-		close(pass_pipe_fd[0]);
-		close(pin_pipe_fd[0]);
-
 		// Procedure to end child proccess
 		int status;
 		pid_t child_pid = wait(&status);
@@ -274,6 +260,21 @@ void get_credentials(char* buffer_full_hashed_pass, char* buffer_pin)
 			fprintf(stderr, "Error in python script child.\n");
 			_exit(EXIT_FAILURE);
 		}
+
+		// Close pipes outputs
+		close(pass_pipe_fd[1]);
+		close(pin_pipe_fd[1]);
+
+		// Reading full hashed pass from pipe
+		read(pass_pipe_fd[0], buffer_full_hashed_pass, HASHED_PASSWORD_BUFFER_SIZE);
+
+		// Reading pin from pipe
+		read(pin_pipe_fd[0], buffer_pin, PIN_BUFFER_SIZE);
+        buffer_pin[strcspn ( buffer_pin, "\n" )] = '\0';
+
+		// Close pipes inputs as they're no longer needed
+		close(pass_pipe_fd[0]);
+		close(pin_pipe_fd[0]);
 	}
 }
 
@@ -309,12 +310,6 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 		_exit(EXIT_FAILURE);
 	}
 
-	// Reading password from FIFO
-	while( read(fd_fifo, buffer_password, PASSWORD_BUFFER_SIZE) == 0 );
-	buffer_password[strcspn(buffer_password, "\r\n" )] = '\0';
-
-	close(fd_fifo);
-
 	// Procedure to end child proccess
 	child_pid = wait(&status);
 
@@ -324,9 +319,15 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 		}
 	}
 	else {
-		fprintf(stderr, "Error in bash password script child.\n");
+		fprintf(stderr, "Error in bash pin script child.\n");
 		_exit(EXIT_FAILURE);
 	}
+
+	// Reading password from FIFO
+	while( read(fd_fifo, buffer_password, PASSWORD_BUFFER_SIZE) == 0 );
+	buffer_password[strcspn(buffer_password, "\r\n" )] = '\0';
+
+	close(fd_fifo);
 
 	char* inputted_password = (char*) malloc(sizeof(char) * (strlen(buffer_password) + 1));
 
@@ -384,12 +385,6 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 		_exit(EXIT_FAILURE);
 	}
 
-	// Reading pin from FIFO
-	while( read(fd_fifo, buffer_pin, PIN_BUFFER_SIZE) == 0 );
-	buffer_pin[strcspn(buffer_pin, "\r\n" )] = '\0';
-
-	close(fd_fifo);
-
 	// Procedure to end child proccess
 	child_pid = wait(&status);
 
@@ -402,6 +397,12 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 		fprintf(stderr, "Error in bash pin script child.\n");
 		_exit(EXIT_FAILURE);
 	}
+
+	// Reading pin from FIFO
+	while( read(fd_fifo, buffer_pin, PIN_BUFFER_SIZE) == 0 );
+	buffer_pin[strcspn(buffer_pin, "\r\n" )] = '\0';
+
+	close(fd_fifo);
 
 	int inputted_pin;
 
@@ -1015,19 +1016,19 @@ void initializePaths() {
 	cwd_path = (char*) malloc(cwd_path_size * sizeof(char));
 	strcpy(cwd_path, cwd_buffer);
 
-	creds_fifo_path = (char*) malloc((cwd_path_size + strlen(CREDS_FIFO)) * sizeof(char));
+	creds_fifo_path = (char*) malloc((cwd_path_size + strlen(CREDS_FIFO) + 1) * sizeof(char));
 	sprintf(creds_fifo_path, "%s%s", cwd_buffer, CREDS_FIFO);
 
-	passwd_path = (char*) malloc((cwd_path_size + strlen(PASSWD_FILE)) * sizeof(char));
+	passwd_path = (char*) malloc((cwd_path_size + strlen(PASSWD_FILE) + 1) * sizeof(char));
 	sprintf(passwd_path, "%s%s", cwd_buffer, PASSWD_FILE);
 
-	python_script_path = (char*) malloc((cwd_path_size + strlen(PYTHON_SCRIPT)) * sizeof(char));
+	python_script_path = (char*) malloc((cwd_path_size + strlen(PYTHON_SCRIPT) + 1) * sizeof(char));
 	sprintf(python_script_path, "%s%s", cwd_buffer, PYTHON_SCRIPT);
 
-	bash_pass_script_path = (char*) malloc((cwd_path_size + strlen(BASH_PASS_SCRIPT)) * sizeof(char));
+	bash_pass_script_path = (char*) malloc((cwd_path_size + strlen(BASH_PASS_SCRIPT) + 1) * sizeof(char));
 	sprintf(bash_pass_script_path, "%s%s", cwd_buffer, BASH_PASS_SCRIPT);
 
-	bash_pin_script_path = (char*) malloc((cwd_path_size + strlen(BASH_PIN_SCRIPT)) * sizeof(char));
+	bash_pin_script_path = (char*) malloc((cwd_path_size + strlen(BASH_PIN_SCRIPT) + 1) * sizeof(char));
 	sprintf(bash_pin_script_path, "%s%s", cwd_buffer, BASH_PIN_SCRIPT);
 }
 
