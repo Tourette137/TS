@@ -512,10 +512,10 @@ int authentication_caller()
 		return res;
 
 	}
-	else if (*authorized == AUTH_AUTHORIZED)
-		return 0;
 
-	return authentication_caller();
+	else {
+		return authentication_caller();
+	}
 }
 
 static void *xmp_init(struct fuse_conn_info *conn,
@@ -762,7 +762,7 @@ static int our_open(const char *path, struct fuse_file_info *fi)
 		return -EACCES;
 	}
 
-	*authorized = -1;
+	*authorized = AUTH_UNAUTHORIZED;
 	
 	int res;
 
