@@ -1,3 +1,27 @@
+/*
+  FUSE: Filesystem in Userspace
+  Copyright (C) 2001-2007  Miklos Szeredi <miklos@szeredi.hu>
+  Copyright (C) 2011       Sebastian Pipping <sebastian@pipping.org>
+  This program can be distributed under the terms of the GNU GPLv2.
+  See the file COPYING.
+*/
+
+/** @file
+ *
+ * This file system mirrors the existing file system hierarchy of the
+ * system, starting at the root file system. This is implemented by
+ * just "passing through" all requests to the corresponding user-space
+ * libc functions. Its performance is terrible.
+ *
+ * Compile with
+ *
+ *     gcc -Wall our_passthrough.c `pkg-config fuse3 --cflags --libs` -o our_passthrough
+ *
+ * ## Source code ##
+ * \include our_passthrough.c
+ */
+
+
 #define FUSE_USE_VERSION 31
 
 #ifdef HAVE_CONFIG_H
@@ -18,11 +42,11 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
-#include <errno.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <errno.h>
 #ifdef __FreeBSD__
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -40,7 +64,13 @@
 #define PIN_BUFFER_SIZE 8
 #define PASSWD_FILE_LINE_BUFFER_SIZE 256
 
-int* authored = NULL;
+enum AUTH_STATUS {
+	AUTH_UNAUTHORIZED = -1,
+	AUTH_IN_PROCESS   = 0,
+	AUTH_AUTHORIZED   = 1,
+};
+
+int* authorized = NULL;
 
 char* cwd_path = NULL;
 int cwd_path_size;
@@ -53,7 +83,7 @@ char* bash_pin_script_path = NULL;
 
 const char* CREDS_FIFO       = "/utils/creds_fifo";
 const char* PASSWD_FILE      = "/utils/passwd";
-const char* PYTHON_SCRIPT    = "/auth.py";
+const char* PYTHON_SCRIPT    = "/python_pin.py";
 const char* BASH_PASS_SCRIPT = "/bash_pass.sh";
 const char* BASH_PIN_SCRIPT  = "/bash_pin.sh";
 
@@ -113,9 +143,8 @@ void hash_password(char* buffer, char* password, char* salt)
     }
 }
 
-int auth_register()
+int user_register()
 {
-
 	// Get username 
 	char username[USERNAME_BUFFER_SIZE];
 	getlogin_r(username, sizeof(username));
@@ -430,8 +459,8 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 
 }
 
-int auth() {
-
+int authenticate_user()
+{
 	// Initialize buffers that will be used in the get_credential function
 	char* buffer_full_hashed_pass = (char*) malloc(sizeof(char) * HASHED_PASSWORD_BUFFER_SIZE);
 	char* buffer_pin = (char*) malloc(sizeof(char) * PIN_BUFFER_SIZE);
@@ -465,29 +494,32 @@ int auth() {
 	return authorized;
 }
 
-int auth_caller () {
+int authentication_caller()
+{
+	while (*authorized == AUTH_IN_PROCESS);
 
-	while (*authored  == 0); // Add sleep() for non active waiting
+	if (*authorized == AUTH_UNAUTHORIZED) {
 
-	if (*authored == -1) {
+		*authorized = AUTH_IN_PROCESS;
 
-		*authored = 0;
+		int res = authenticate_user();
 
-		int access = auth();
+		if (res == 0 && *authorized == AUTH_IN_PROCESS)
+			*authorized = AUTH_AUTHORIZED;
+		else
+			*authorized = AUTH_UNAUTHORIZED;
 
-		if (access == 0 && *authored == 0) *authored = 1;
-		else *authored = -1;
+		return res;
 
-		return access;
+	}
+	else if (*authorized == AUTH_AUTHORIZED)
+		return 0;
 
-	} else if (*authored == 1) return 0;
-
-	return auth_caller();
-
+	return authentication_caller();
 }
 
-static void *auth_init(struct fuse_conn_info *conn,
-		struct fuse_config *cfg)
+static void *xmp_init(struct fuse_conn_info *conn,
+			  struct fuse_config *cfg)
 {
 	(void) conn;
 	cfg->use_ino = 1;
@@ -506,8 +538,8 @@ static void *auth_init(struct fuse_conn_info *conn,
 	return NULL;
 }
 
-static int auth_getattr(const char *path, struct stat *stbuf,
-		struct fuse_file_info *fi)
+static int xmp_getattr(const char *path, struct stat *stbuf,
+			   struct fuse_file_info *fi)
 {
 	(void) fi;
 	int res;
@@ -519,7 +551,7 @@ static int auth_getattr(const char *path, struct stat *stbuf,
 	return 0;
 }
 
-static int auth_access(const char *path, int mask)
+static int xmp_access(const char *path, int mask)
 {
 	int res;
 
@@ -530,7 +562,7 @@ static int auth_access(const char *path, int mask)
 	return 0;
 }
 
-static int auth_readlink(const char *path, char *buf, size_t size)
+static int xmp_readlink(const char *path, char *buf, size_t size)
 {
 	int res;
 
@@ -543,9 +575,9 @@ static int auth_readlink(const char *path, char *buf, size_t size)
 }
 
 
-static int auth_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
-		off_t offset, struct fuse_file_info *fi,
-		enum fuse_readdir_flags flags)
+static int xmp_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+			   off_t offset, struct fuse_file_info *fi,
+			   enum fuse_readdir_flags flags)
 {
 	DIR *dp;
 	struct dirent *de;
@@ -571,7 +603,7 @@ static int auth_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 	return 0;
 }
 
-static int auth_mknod(const char *path, mode_t mode, dev_t rdev)
+static int xmp_mknod(const char *path, mode_t mode, dev_t rdev)
 {
 	int res;
 
@@ -582,7 +614,7 @@ static int auth_mknod(const char *path, mode_t mode, dev_t rdev)
 	return 0;
 }
 
-static int auth_mkdir(const char *path, mode_t mode)
+static int xmp_mkdir(const char *path, mode_t mode)
 {
 	int res;
 
@@ -593,7 +625,7 @@ static int auth_mkdir(const char *path, mode_t mode)
 	return 0;
 }
 
-static int auth_unlink(const char *path)
+static int xmp_unlink(const char *path)
 {
 	int res;
 
@@ -604,7 +636,7 @@ static int auth_unlink(const char *path)
 	return 0;
 }
 
-static int auth_rmdir(const char *path)
+static int xmp_rmdir(const char *path)
 {
 	int res;
 
@@ -615,7 +647,7 @@ static int auth_rmdir(const char *path)
 	return 0;
 }
 
-static int auth_symlink(const char *from, const char *to)
+static int xmp_symlink(const char *from, const char *to)
 {
 	int res;
 
@@ -626,7 +658,7 @@ static int auth_symlink(const char *from, const char *to)
 	return 0;
 }
 
-static int auth_rename(const char *from, const char *to, unsigned int flags)
+static int xmp_rename(const char *from, const char *to, unsigned int flags)
 {
 	int res;
 
@@ -640,7 +672,7 @@ static int auth_rename(const char *from, const char *to, unsigned int flags)
 	return 0;
 }
 
-static int auth_link(const char *from, const char *to)
+static int xmp_link(const char *from, const char *to)
 {
 	int res;
 
@@ -651,8 +683,8 @@ static int auth_link(const char *from, const char *to)
 	return 0;
 }
 
-static int auth_chmod(const char *path, mode_t mode,
-		struct fuse_file_info *fi)
+static int xmp_chmod(const char *path, mode_t mode,
+			 struct fuse_file_info *fi)
 {
 	(void) fi;
 	int res;
@@ -664,8 +696,8 @@ static int auth_chmod(const char *path, mode_t mode,
 	return 0;
 }
 
-static int auth_chown(const char *path, uid_t uid, gid_t gid,
-		struct fuse_file_info *fi)
+static int xmp_chown(const char *path, uid_t uid, gid_t gid,
+			 struct fuse_file_info *fi)
 {
 	(void) fi;
 	int res;
@@ -677,8 +709,8 @@ static int auth_chown(const char *path, uid_t uid, gid_t gid,
 	return 0;
 }
 
-static int auth_truncate(const char *path, off_t size,
-		struct fuse_file_info *fi)
+static int xmp_truncate(const char *path, off_t size,
+			struct fuse_file_info *fi)
 {
 	int res;
 
@@ -693,7 +725,7 @@ static int auth_truncate(const char *path, off_t size,
 }
 
 #ifdef HAVE_UTIMENSAT
-static int auth_utimens(const char *path, const struct timespec ts[2],
+static int xmp_utimens(const char *path, const struct timespec ts[2],
 		struct fuse_file_info *fi)
 {
 	(void) fi;
@@ -708,8 +740,8 @@ static int auth_utimens(const char *path, const struct timespec ts[2],
 }
 #endif
 
-static int auth_create(const char *path, mode_t mode,
-		struct fuse_file_info *fi)
+static int xmp_create(const char *path, mode_t mode,
+			  struct fuse_file_info *fi)
 {
 	int res;
 
@@ -721,28 +753,29 @@ static int auth_create(const char *path, mode_t mode,
 	return 0;
 }
 
-static int auth_open(const char *path, struct fuse_file_info *fi)
+static int our_open(const char *path, struct fuse_file_info *fi)
 {
-	auth_caller();
+	authentication_caller();
 
-	if (*authored != 1) {
-		*authored = -1;
+	if (*authorized != AUTH_AUTHORIZED) {
+		*authorized = AUTH_UNAUTHORIZED;
 		return -EACCES;
 	}
 
-	*authored = -1;
+	*authorized = -1;
 	
 	int res;
 
 	res = open(path, fi->flags);
-	if (res == -1) return -errno;
+	if (res == -1)
+		return -errno;
 
 	fi->fh = res;
 	return 0;	
 }
 
-static int auth_read(const char *path, char *buf, size_t size, off_t offset,
-		struct fuse_file_info *fi)
+static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
+			struct fuse_file_info *fi)
 {
 	int fd;
 	int res;
@@ -764,8 +797,8 @@ static int auth_read(const char *path, char *buf, size_t size, off_t offset,
 	return res;
 }
 
-static int auth_write(const char *path, const char *buf, size_t size,
-		off_t offset, struct fuse_file_info *fi)
+static int xmp_write(const char *path, const char *buf, size_t size,
+			 off_t offset, struct fuse_file_info *fi)
 {
 	int fd;
 	int res;
@@ -788,7 +821,7 @@ static int auth_write(const char *path, const char *buf, size_t size,
 	return res;
 }
 
-static int auth_statfs(const char *path, struct statvfs *stbuf)
+static int xmp_statfs(const char *path, struct statvfs *stbuf)
 {
 	int res;
 
@@ -799,15 +832,15 @@ static int auth_statfs(const char *path, struct statvfs *stbuf)
 	return 0;
 }
 
-static int auth_release(const char *path, struct fuse_file_info *fi)
+static int xmp_release(const char *path, struct fuse_file_info *fi)
 {
 	(void) path;
 	close(fi->fh);
 	return 0;
 }
 
-static int auth_fsync(const char *path, int isdatasync,
-		struct fuse_file_info *fi)
+static int xmp_fsync(const char *path, int isdatasync,
+			 struct fuse_file_info *fi)
 {
 	/* Just a stub.	 This method is optional and can safely be left
 	   unimplemented */
@@ -819,8 +852,8 @@ static int auth_fsync(const char *path, int isdatasync,
 }
 
 #ifdef HAVE_POSIX_FALLOCATE
-static int auth_fallocate(const char *path, int mode,
-		off_t offset, off_t length, struct fuse_file_info *fi)
+static int xmp_fallocate(const char *path, int mode,
+			off_t offset, off_t length, struct fuse_file_info *fi)
 {
 	int fd;
 	int res;
@@ -848,8 +881,8 @@ static int auth_fallocate(const char *path, int mode,
 
 #ifdef HAVE_SETXATTR
 /* xattr operations are optional and can safely be left unimplemented */
-static int auth_setxattr(const char *path, const char *name, const char *value,
-		size_t size, int flags)
+static int xmp_setxattr(const char *path, const char *name, const char *value,
+			size_t size, int flags)
 {
 	int res = lsetxattr(path, name, value, size, flags);
 	if (res == -1)
@@ -857,8 +890,8 @@ static int auth_setxattr(const char *path, const char *name, const char *value,
 	return 0;
 }
 
-static int auth_getxattr(const char *path, const char *name, char *value,
-		size_t size)
+static int xmp_getxattr(const char *path, const char *name, char *value,
+			size_t size)
 {
 	int res = lgetxattr(path, name, value, size);
 	if (res == -1)
@@ -866,7 +899,7 @@ static int auth_getxattr(const char *path, const char *name, char *value,
 	return res;
 }
 
-static int auth_listxattr(const char *path, char *list, size_t size)
+static int xmp_listxattr(const char *path, char *list, size_t size)
 {
 	int res = llistxattr(path, list, size);
 	if (res == -1)
@@ -874,7 +907,7 @@ static int auth_listxattr(const char *path, char *list, size_t size)
 	return res;
 }
 
-static int auth_removexattr(const char *path, const char *name)
+static int xmp_removexattr(const char *path, const char *name)
 {
 	int res = lremovexattr(path, name);
 	if (res == -1)
@@ -884,11 +917,11 @@ static int auth_removexattr(const char *path, const char *name)
 #endif /* HAVE_SETXATTR */
 
 #ifdef HAVE_COPY_FILE_RANGE
-static ssize_t auth_copy_file_range(const char *path_in,
-		struct fuse_file_info *fi_in,
-		off_t offset_in, const char *path_out,
-		struct fuse_file_info *fi_out,
-		off_t offset_out, size_t len, int flags)
+static ssize_t xmp_copy_file_range(const char *path_in,
+				   struct fuse_file_info *fi_in,
+				   off_t offset_in, const char *path_out,
+				   struct fuse_file_info *fi_out,
+				   off_t offset_out, size_t len, int flags)
 {
 	int fd_in, fd_out;
 	ssize_t res;
@@ -923,7 +956,7 @@ static ssize_t auth_copy_file_range(const char *path_in,
 }
 #endif
 
-static off_t auth_lseek(const char *path, off_t off, int whence, struct fuse_file_info *fi)
+static off_t xmp_lseek(const char *path, off_t off, int whence, struct fuse_file_info *fi)
 {
 	int fd;
 	off_t res;
@@ -945,45 +978,45 @@ static off_t auth_lseek(const char *path, off_t off, int whence, struct fuse_fil
 	return res;
 }
 
-static struct fuse_operations auth_oper = {
-	.init       = auth_init,
-	.getattr	= auth_getattr,
-	.access		= auth_access,
-	.readlink	= auth_readlink,
-	.readdir	= auth_readdir,
-	.mknod		= auth_mknod,
-	.mkdir		= auth_mkdir,
-	.symlink	= auth_symlink,
-	.unlink		= auth_unlink,
-	.rmdir		= auth_rmdir,
-	.rename		= auth_rename,
-	.link		= auth_link,
-	.chmod		= auth_chmod,
-	.chown		= auth_chown,
-	.truncate	= auth_truncate,
+static const struct fuse_operations xmp_oper = {
+	.init       = xmp_init,
+	.getattr	= xmp_getattr,
+	.access		= xmp_access,
+	.readlink	= xmp_readlink,
+	.readdir	= xmp_readdir,
+	.mknod		= xmp_mknod,
+	.mkdir		= xmp_mkdir,
+	.symlink	= xmp_symlink,
+	.unlink		= xmp_unlink,
+	.rmdir		= xmp_rmdir,
+	.rename		= xmp_rename,
+	.link		= xmp_link,
+	.chmod		= xmp_chmod,
+	.chown		= xmp_chown,
+	.truncate	= xmp_truncate,
 #ifdef HAVE_UTIMENSAT
-	.utimens	= auth_utimens,
+	.utimens	= xmp_utimens,
 #endif
-	.open		= auth_open,
-	.create 	= auth_create,
-	.read		= auth_read,
-	.write		= auth_write,
-	.statfs		= auth_statfs,
-	.release	= auth_release,
-	.fsync		= auth_fsync,
+	.open		= our_open,
+	.create 	= xmp_create,
+	.read		= xmp_read,
+	.write		= xmp_write,
+	.statfs		= xmp_statfs,
+	.release	= xmp_release,
+	.fsync		= xmp_fsync,
 #ifdef HAVE_POSIX_FALLOCATE
-	.fallocate	= auth_fallocate,
+	.fallocate	= xmp_fallocate,
 #endif
 #ifdef HAVE_SETXATTR
-	.setxattr	= auth_setxattr,
-	.getxattr	= auth_getxattr,
-	.listxattr	= auth_listxattr,
-	.removexattr	= auth_removexattr,
+	.setxattr	= xmp_setxattr,
+	.getxattr	= xmp_getxattr,
+	.listxattr	= xmp_listxattr,
+	.removexattr	= xmp_removexattr,
 #endif
 #ifdef HAVE_COPY_FILE_RANGE
-	.copy_file_range = auth_copy_file_range,
+	.copy_file_range = xmp_copy_file_range,
 #endif
-	.lseek = auth_lseek,
+	.lseek      = xmp_lseek,
 };
 
 
@@ -1019,34 +1052,17 @@ int main(int argc, char *argv[])
 
 	if (argc > 1 && strcmp(argv[1],"register") == 0 ) {
 		
-		return auth_register();
+		return user_register();
 
 	}
 
 	else {
 
-		authored = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-		*authored = -1;
+		authorized = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+		*authorized = AUTH_UNAUTHORIZED;
 
-		return fuse_main(argc, argv, &auth_oper, NULL);
+		return fuse_main(argc, argv, &xmp_oper, NULL);
 	}
 
 }
-
-/* TODO:
-Ideias para implementar:
-- Mudar o nome das funções auth para outro e comnetários
-- Acrescentar por exemplo "./auth registar" para registar novos Users e acrescentar ao usermap
-- Possuir uma estrutura de dados que sempre que um Utilizador se regista dá update nela mesma com um SIGALARM por exemplo;
-- guardar hash da password
-- verificar tamanho do número de telemóvel inserido
-- asteriscos quando se escreve password
-
-usermap:
-criar user (tourette, pass, nrTelemovel)
-1 - load para a estrutura
-
-Descobrir como mudar pin para ser sempre o mesmo
-
-Descobrir o que é mmap
-*/		
+	
