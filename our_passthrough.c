@@ -87,7 +87,7 @@ const char* PYTHON_SCRIPT    = "/python_pin.py";
 const char* BASH_PASS_SCRIPT = "/bash_pass.sh";
 const char* BASH_PIN_SCRIPT  = "/bash_pin.sh";
 
-void hash_password(char* buffer, char* password, char* salt)
+int hash_password(char* buffer, char* password, char* salt)
 {
     pid_t pid;
     int pipe_fd[2];
@@ -95,13 +95,13 @@ void hash_password(char* buffer, char* password, char* salt)
 	// Creating pipe to send hashed password
 	if (pipe(pipe_fd) == -1) {
 		perror("Error on hash_password pipe");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 
 	// Creating a child process
     if ((pid = fork()) == -1) {
 		perror("Error on hash_password fork");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
     }
 
     // Child process that will run openssl
@@ -117,7 +117,7 @@ void hash_password(char* buffer, char* password, char* salt)
 			execl("/usr/bin/openssl", "openssl", "passwd", "-5", "-salt", salt, password, NULL);
 
 		perror("Error executing openssl");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
     }
     else {
         close(pipe_fd[1]);
@@ -133,13 +133,15 @@ void hash_password(char* buffer, char* password, char* salt)
 
 		if (WIFEXITED(status)) {
 			if (WEXITSTATUS(status) != EXIT_SUCCESS) {
-				_exit(EXIT_FAILURE);
+				return -EACCES;
 			}
 		}
 		else {
 			fprintf(stderr, "Error in openssl child.\n");
-			_exit(EXIT_FAILURE);
+			return -EACCES;
 		}
+
+		return 0;
     }
 }
 
@@ -163,12 +165,14 @@ int user_register()
 
 	if (strcmp(password, password_again) != 0) {
 		fprintf(stderr, "Passwords are not the same.\n");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 
 	// Calculate password hash
     char *hashed_pass = (char*) malloc(HASHED_PASSWORD_BUFFER_SIZE * sizeof(char));
-    hash_password(hashed_pass, password, NULL);
+    if (hash_password(hashed_pass, password, NULL) != 0 ) {
+		return -EACCES;
+	}
 
 	// Get cellphone from stdin and append '+351' prefix
 	char cellphone[10], cellphone_final[14];
@@ -176,7 +180,7 @@ int user_register()
 	fgets(cellphone, 10, stdin);
 	if (strlen(cellphone) > 9) {
 		fprintf(stderr, "Cellphone number too big.\n");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 	cellphone[strcspn(cellphone, "\r\n" )] = '\0';
 
@@ -187,7 +191,7 @@ int user_register()
 
 	if (passwd_file == NULL) {
 		perror("Error opening passwd file");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 
 	fprintf(passwd_file, "%s %s %s\n", username, cellphone_final, hashed_pass);
@@ -198,7 +202,7 @@ int user_register()
 	return 0;
 }
 
-void get_credentials(char* buffer_full_hashed_pass, char* buffer_pin)
+int get_credentials(char* buffer_full_hashed_pass, char* buffer_pin)
 {
 	pid_t pid;
 	int pass_pipe_fd[2];
@@ -207,19 +211,19 @@ void get_credentials(char* buffer_full_hashed_pass, char* buffer_pin)
 	// Creating pipe for the python script child to send hashed password
 	if (pipe(pass_pipe_fd) == -1) { 
 		perror("Error on python script child pipe");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 
 	// Creating pipe for the python script child to send pin
 	if (pipe(pin_pipe_fd) == -1) { 
 		perror("Error on python script child pipe");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 
 	// Creating the python script child process
 	if ((pid = fork()) == -1) { 
 		perror("Error on python script child fork");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 
 	// Child process that will run the python script and send pin and full hashed password to his parent, through the pipes created
@@ -237,7 +241,7 @@ void get_credentials(char* buffer_full_hashed_pass, char* buffer_pin)
 
 		if (passwd_file == NULL) {
 			perror("Error opening passwd file");
-			_exit(EXIT_FAILURE);
+			return -EACCES;
 		}
 
 		char username[USERNAME_BUFFER_SIZE];
@@ -270,14 +274,14 @@ void get_credentials(char* buffer_full_hashed_pass, char* buffer_pin)
 				execl("/usr/bin/python3", "python3", python_script_path, cellphone, (char *) NULL);
 
 				perror("Error executing python script");
-				_exit(EXIT_FAILURE);
+				return -EACCES;
 
 			}
 		}
 	
 		// If username is not found in passwd file, an error is shown
 		fprintf(stderr, "User not found in passwd file.\n");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 	// Parent process that will get the pin and full hashed password from is child, through the pipes
 	else {
@@ -288,12 +292,12 @@ void get_credentials(char* buffer_full_hashed_pass, char* buffer_pin)
 
 		if (WIFEXITED(status)) {
 			if (WEXITSTATUS(status) != EXIT_SUCCESS) {
-				_exit(EXIT_FAILURE);
+				return -EACCES;
 			}
 		}
 		else {
 			fprintf(stderr, "Error in python script child.\n");
-			_exit(EXIT_FAILURE);
+			return -EACCES;
 		}
 
 		// Close pipes outputs
@@ -310,6 +314,8 @@ void get_credentials(char* buffer_full_hashed_pass, char* buffer_pin)
 		// Close pipes inputs as they're no longer needed
 		close(pass_pipe_fd[0]);
 		close(pin_pipe_fd[0]);
+
+		return 0;
 	}
 }
 
@@ -324,7 +330,7 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 	// Creating the password input terminal child process
 	if ((pid = fork()) == -1) { 
 		perror("Error on password input terminal child fork");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 
 	// Child process that will run the bash password script and send user inputted password to his parent, through a FIFO
@@ -332,7 +338,7 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 		execl("/usr/bin/xterm", "xterm", "-e", "bash", bash_pass_script_path, creds_fifo_path, (char *) NULL);
 
 		perror("Error executing bash password script");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 	
 	// Parent process that will get user inputted password from is child, through the FIFO
@@ -342,7 +348,7 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 
 	if (fd_fifo == -1) {
 		perror("Error opening FIFO");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 
 	// Procedure to end child proccess
@@ -351,12 +357,12 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 
 	if (WIFEXITED(status)) {
 		if (WEXITSTATUS(status) != EXIT_SUCCESS) {
-			_exit(EXIT_FAILURE);
+			return -EACCES;
 		}
 	}
 	else {
 		fprintf(stderr, "Error in bash pin script child.\n");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 
 	// Reading password from FIFO
@@ -370,7 +376,7 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 	// Parsing inputted password from its buffer
 	if(sscanf(buffer_password, "%s", inputted_password) != 1) {
 		fprintf(stderr, "Error parsing password obtained from user input.\n");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 
 	// Parse salt and password hash from the real full hashed pass
@@ -380,7 +386,9 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 
 	// Calculate full hash of inputted password, given from the terminal
 	char* inputted_password_hash = (char*) malloc(HASHED_PASSWORD_BUFFER_SIZE * sizeof(char));
-	hash_password(inputted_password_hash, inputted_password, salt);
+	if (hash_password(inputted_password_hash, inputted_password, salt) != 0) {
+		return -EACCES;
+	}
 
 	// Parse inputted password hash, from the full hash
 	strtok(inputted_password_hash, "$");
@@ -400,7 +408,7 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 	// Creating the pin input terminal child process
 	if ((pid = fork()) == -1) { 
 		perror("Error on pin input terminal child fork");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 
 	// Child process that will run the bash pin script and send user inputted pin to his parent, through a FIFO
@@ -408,7 +416,7 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 		execl("/usr/bin/xterm", "xterm", "-e", "bash", bash_pin_script_path, creds_fifo_path, (char *) NULL);
 
 		perror("Error executing bash pin script");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 
 	// Parent process that will get user inputted pin from is child, through the FIFO
@@ -418,7 +426,7 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 
 	if (fd_fifo == -1) {
 		perror("Error opening FIFO");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 
 	// Procedure to end child proccess
@@ -427,12 +435,12 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 
 	if (WIFEXITED(status)) {
 		if (WEXITSTATUS(status) != EXIT_SUCCESS) {
-			_exit(EXIT_FAILURE);
+			return -EACCES;
 		}
 	}
 	else {
 		fprintf(stderr, "Error in bash pin script child.\n");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 
 	// Reading pin from FIFO
@@ -446,7 +454,7 @@ int validate_user_credentials(char* real_full_hashed_pass, int real_pin)
 	// Parsing inputted pin from its buffer
 	if(sscanf(buffer_pin, "%d", &inputted_pin) != 1) {
 		fprintf(stderr, "Error parsing pin obtained from user input.\n");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 
 	// Verify if inputted pin matches with the real one
@@ -466,7 +474,9 @@ int authenticate_user()
 	char* buffer_pin = (char*) malloc(sizeof(char) * PIN_BUFFER_SIZE);
 
 	// Fill buffers with the full hashed pass obtained from the passwd file and the pin obtained from the python script
-	get_credentials(buffer_full_hashed_pass, buffer_pin);
+	if (get_credentials(buffer_full_hashed_pass, buffer_pin) != 0) {
+		return -EACCES;
+	}
 
 	// Parse pin and full hashed pass from their buffers
 	char* full_hashed_pass = (char*) malloc(sizeof(char) * (strlen(buffer_full_hashed_pass) + 1));
@@ -475,13 +485,13 @@ int authenticate_user()
 	// Parsing full hashed pass from its buffer
 	if (sscanf(buffer_full_hashed_pass, "%s", full_hashed_pass) != 1) {
 		fprintf(stderr, "Error parsing full hashed pass obtained from passwd file.\n");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 	
 	// Parsing pin from its buffer
 	if(sscanf(buffer_pin, "%d", &pin) != 1) { 
 		fprintf(stderr, "Error parsing pin obtained from python script.\n");
-		_exit(EXIT_FAILURE);
+		return -EACCES;
 	}
 
 	// Freeing memory from the buffers as it no longer will be needed
